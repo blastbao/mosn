@@ -26,6 +26,7 @@ import (
 type valueCtx struct {
 	context.Context
 
+	// 通过 index 定位 value
 	builtin [types.ContextKeyEnd]interface{}
 }
 

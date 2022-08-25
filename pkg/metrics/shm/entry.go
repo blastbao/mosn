@@ -26,9 +26,14 @@ const maxNameLength = 107
 // metricsEntry is the mapping for metrics entry record memory-layout in shared memory.
 //
 // This struct should never be instantiated.
+//
+// 共 8 + 4 + 108 = 120 B
 type metricsEntry struct {
+	// 数值
 	value int64                   // 8
+	// 引用计数
 	ref   uint32                  // 4
+	// 名称
 	name  [maxNameLength + 1]byte // 107 + 1 for '\0', end of string tag in C-style string
 }
 

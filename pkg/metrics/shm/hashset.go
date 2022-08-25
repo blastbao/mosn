@@ -52,28 +52,37 @@ func hash(key string) uint32 {
 }
 
 type hashSet struct {
-	entry []hashEntry
-	meta  *meta
-	slots []uint32
+	entry []hashEntry	// 占用 meta.cap * sizeof(hashEntry) 的大小
+	meta  *meta			//
+	slots []uint32		// 占用 meta.slotsNum * 4 的大小
 }
 
 type hashEntry struct {
-	metricsEntry
-	next uint32
+	metricsEntry	// <name, value, ref> , 120B
+	next uint32		// 4B
 
 	// Prevents false sharing on widespread platforms with
 	// 128 mod (cache line size) = 0 .
+	//
+	// 填满 128 B
 	pad [128 - unsafe.Sizeof(metricsEntry{})%128 - 4]byte
 }
 
 type meta struct {
-	cap       uint32
-	size      uint32
-	freeIndex uint32
+	cap       uint32	// 容量
+	size      uint32	// 元素数
+	freeIndex uint32	// 下一个可用的空闲 entry ，通过 next 指针将所有空闲 entry 串联起来，类似于空闲对象池。
 
-	slotsNum uint32
+	slotsNum uint32		// 假设 slotsNum == 128 ，那么所有 <k, v> 都 hash 到这 128 个桶，每个桶内是一个链表，链表元素即 `hashEntry` 。
 	bytesNum uint32
 }
+
+
+// 大致说一下哈希表初始化的算法：
+//
+// 首先 alignedSize 表示 4k 对齐后的 ShmSpan 大小，
+// 前 8 个字节被分配为互斥锁和引用计数，
+// 另外 20 个字节被分配为哈希表的 meta 结构体，
 
 func newHashSet(segment uintptr, bytesNum, cap, slotsNum int, init bool) (*hashSet, error) {
 	set := &hashSet{}
@@ -111,6 +120,7 @@ func newHashSet(segment uintptr, bytesNum, cap, slotsNum int, init bool) (*hashS
 		return nil, errors.New("segment is not enough to map hashSet.slots")
 	}
 
+	// 初始化
 	if init {
 		// 4. initialize
 		// 4.1 meta
@@ -134,6 +144,7 @@ func newHashSet(segment uintptr, bytesNum, cap, slotsNum int, init bool) (*hashS
 
 func (s *hashSet) Alloc(name string) (*hashEntry, bool) {
 	// 1. search existed slots and entries
+	// 计算 hash 值作为 slot index
 	h := hash(name)
 	slot := h % s.meta.slotsNum
 
@@ -147,35 +158,40 @@ func (s *hashSet) Alloc(name string) (*hashEntry, bool) {
 
 	nameBytes := []byte(name)
 
+	// 定位到 slot ，查找对应的 entry
 	var entry *hashEntry
 	for index := s.slots[slot]; index != sentinel; {
 		entry = &s.entry[index]
-
 		if entry.equalName(nameBytes) {
 			return entry, false
 		}
-
 		index = entry.next
 	}
 
 	// 2. create new entry
+	// 如果找不到, 创建新的 entry
+
+	// 超过限制，报错
 	if s.meta.size >= s.meta.cap {
 		return nil, false
 	}
 
-	newIndex := s.meta.freeIndex
+	// 创建新的 entry
+	newIndex := s.meta.freeIndex		// 取一个空闲 entry
 	newEntry := &s.entry[newIndex]
-	newEntry.assignName(nameBytes)
-	newEntry.ref = 1
+	newEntry.assignName(nameBytes)		// 设置 name
+	newEntry.ref = 1					// 设置 ref
 
+	// 将 entry 插入到 slot 中
 	if entry == nil {
-		s.slots[slot] = newIndex
+		s.slots[slot] = newIndex 	// 初始化 slot 链表
 	} else {
-		entry.next = newIndex
+		entry.next = newIndex 		// 插入到 slot 链表尾
 	}
 
-	s.meta.size++
-	s.meta.freeIndex = newEntry.next
+	// 更新元数据
+	s.meta.size++ 						// 元素数
+	s.meta.freeIndex = newEntry.next 	// 占用当前 entry ，下次分配从 next 开始
 	newEntry.next = sentinel
 
 	return newEntry, true

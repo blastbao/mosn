@@ -45,13 +45,14 @@ func checkConsistency(path string, size int) error {
 	return nil
 }
 
+// ShmSpan : 一个 ShmSpan 可以看做是一个共享内存块。
 type ShmSpan struct {
-	origin []byte
-	name   string
+	origin []byte 	// mmap 返回的数组
+	name   string 	// span 名, 创建时指定
 
-	data   uintptr
-	offset int
-	size   int
+	data   uintptr 	// 保存 mmap 内存段的首指针
+	offset int 		// span 已经使用的字节长度
+	size   int 		// span 大小
 }
 
 func NewShmSpan(name string, data []byte) *ShmSpan {

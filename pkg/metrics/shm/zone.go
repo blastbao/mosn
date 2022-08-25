@@ -70,50 +70,64 @@ func createMetricsZone(name string, size int, clear bool) *zone {
 // zone is the in-heap struct that holds the reference to the entire metrics shared memory.
 // ATTENTION: entries is modified so that it points to the shared memory entries address.
 type zone struct {
-	span *shm.ShmSpan
+	span *shm.ShmSpan	// 共享内存块
 
-	mutex *uint32
-	ref   *uint32
+	// mutex + ref = 64bit, so atomic ops has no problem
+	mutex *uint32		// 互斥锁
+	ref   *uint32		// 引用计数
 
-	set *hashSet // mutex + ref = 64bit, so atomic ops has no problem
+	set *hashSet		//
 }
 
 func newSharedMetrics(name string, size int) (*zone, error) {
+	// 字节对齐
 	alignedSize := align(size, pageSize)
 
+	// 申请 ShmSpan
 	span, err := shm.Alloc(name, alignedSize)
 	if err != nil {
 		return nil, err
 	}
+
 	// 1. mutex and ref
+	// 从 span 里取 4 个字节做互斥锁
 	mutex, err := span.Alloc(4)
 	if err != nil {
 		return nil, err
 	}
 
+	// 从 span 里取 4 个字节做引用计数
 	ref, err := span.Alloc(4)
 	if err != nil {
 		return nil, err
 	}
 
+	// 构造内存 zone 对象
 	zone := &zone{
 		span:  span,
 		mutex: (*uint32)(unsafe.Pointer(mutex)),
 		ref:   (*uint32)(unsafe.Pointer(ref)),
 	}
 
+
 	// 2. hashSet
+	// 划分哈希表过程
 
 	// assuming that 100 entries with 50 slots, so the ratio of occupied memory is
 	// entries:slots  = 100 x 128 : 50 x 4 = 64 : 1
 	// so assuming slots memory size is N, total allocated memory size is M, then we have:
 	// M - 1024 < 65N + 28 <= M
 
+
+	// 计算 slot 的数量和内存占用大小
 	slotsNum := (alignedSize - 28) / (65 * 4)
 	slotsSize := slotsNum * 4
+
+	// 计算 entry 数量和内存占用大小
 	entryNum := slotsNum * 2
 	entrySize := slotsSize * 64
 
+	// 哈希表内存大小 = entry 内存占用 + 20 字节 + slot 内存占用大小
 	hashSegSize := entrySize + 20 + slotsSize
 	hashSegment, err := span.Alloc(hashSegSize)
 	if err != nil {
@@ -121,6 +135,7 @@ func newSharedMetrics(name string, size int) (*zone, error) {
 	}
 
 	// if zones's ref > 0, no need to initialize hashset's value
+	// 初始化哈希表结构
 	set, err := newHashSet(hashSegment, hashSegSize, entryNum, slotsNum, atomic.LoadUint32(zone.ref) == 0)
 	if err != nil {
 		return nil, err
@@ -167,6 +182,7 @@ func (z *zone) alloc(name string) (*hashEntry, error) {
 	z.lock()
 	defer z.unlock()
 
+	//
 	entry, create := z.set.Alloc(name)
 	if entry == nil {
 		// TODO log & stat
